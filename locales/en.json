@@ -1,0 +1,20 @@
+{
+	"progress": {
+		"placing": "Placing Light"
+	},
+	"target": {
+		"change_colour": "Change Colour",
+		"pickup": "Pickup"
+	},
+	"interact": {
+		"place": "~INPUT_ENTER~ ~g~Place",
+		"cancel": "~INPUT_DETONATE~ ~r~Cancel"
+	},
+	"notification": {
+		"giveback": "Your light was returned because you were too far away.",
+		"max_drops": "You already have the maximum of %s active lights.",
+		"invalid": "Invalid action.",
+		"picked_up": "You picked up a light.",
+		"placed": "You placed a light."
+	}
+} 

@@ -13,25 +13,44 @@ game 'gta5'
 lua54 'yes'
 
 shared_scripts {
-    '@ox_lib/init.lua',
-    '@lation_ui/init.lua',
-    'config.lua'
+	'@ox_lib/init.lua',
+	'@lation_ui/init.lua',
+	'bridge/debug.lua',
+	'bridge/config.lua',
+	'bridge/framework.lua',
+	'shared/config.lua'
 }
 
 client_scripts {
-    'client.lua'
+	'bridge/client/functions.lua',
+	'bridge/client/esx.lua',
+	'bridge/client/qb.lua',
+	'bridge/client/qbox.lua',
+	'bridge/client/mythic.lua',
+	'client/client.lua'
 }
 
 server_scripts {
-    'server.lua'
+	'bridge/server/functions.lua',
+	'bridge/server/esx.lua',
+	'bridge/server/qb.lua',
+	'bridge/server/qbox.lua',
+	'bridge/server/mythic.lua',
+	'server/server.lua'
 }
 
 files {
-    'config.lua',
-    'client.lua',
-    'server.lua',
+	'shared/config.lua',
+	'client/client.lua',
+	'server/server.lua',
+	'bridge/config.lua',
+	'bridge/debug.lua',
+	'locales/*.json'
 }
 
 escrow_ignore {
-    'config.lua'
+	'shared/config.lua',
+	'bridge/config.lua',
+	'bridge/debug.lua',
+	'locales/*.json'
 }

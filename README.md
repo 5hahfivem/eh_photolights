@@ -41,5 +41,6 @@ I put time and effort into making this resource, so please:
 - Don’t rename it.  
 - Don’t remove the credits.  
 - Be cool and respect the work.  
+- Thanks to https://github.com/aka-lucifer for the bridge code
 
 Thanks for using it, and I hope it helps make your server a little brighter ✨
