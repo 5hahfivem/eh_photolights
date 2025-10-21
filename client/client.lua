@@ -150,25 +150,10 @@ end
 ---@param distance number
 ---@return boolean, vector3
 local function raycastFromCamera(distance)
-    local camCoords = GetGameplayCamCoord()
-    local camRot = GetGameplayCamRot(2)
-    
-    local direction = vector3(
-        -math.sin(math.rad(camRot.z)) * math.cos(math.rad(camRot.x)),
-        math.cos(math.rad(camRot.z)) * math.cos(math.rad(camRot.x)),
-        math.sin(math.rad(camRot.x))
-    )
-    
-    local endCoords = camCoords + direction * distance
-    local rayHandle = StartShapeTestRay(
-        camCoords.x, camCoords.y, camCoords.z,
-        endCoords.x, endCoords.y, endCoords.z,
-        -1, playerPed, 0
-    )
-    
-    local _, hit, coords, _, _ = GetShapeTestResult(rayHandle)
-    return hit == 1, coords or endCoords
+    local hit, _, endCoords = lib.raycast.fromCamera(511, 4, distance)
+    return hit, endCoords
 end
+
 
 local function createObject(config)
     local model = config.model
@@ -490,12 +475,10 @@ exports('getLight', getLight)
 -- Initialize
 setupTarget()
 
--- Distance warning thread
 CreateThread(function()
     while true do
-        local playerCoords = GetEntityCoords(playerPed)
-        updateDistanceWarning(playerCoords)
-        Wait(5000) -- Check every 5 seconds
+        updateDistanceWarning(GetEntityCoords(playerPed))
+        Wait(5000)
     end
 end)
 
