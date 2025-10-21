@@ -68,7 +68,7 @@ function Notify(message, type, time, icon)
     end
 end
 
-RegisterNetEvent("eh_photolights:client:notify", Notify)
+RegisterNetEvent("hl_photolights:client:notify", Notify)
 
 ---@param entity integer
 ---@param data table
@@ -111,7 +111,7 @@ RemoveTargetEntity = function(entity, data)
 end
 
 ---@param data table
----@return string | integer
+---@return string|integer|nil
 function AddCircleZoneTarget(data)
     if Config.Target == "ox_target" then
         exports.ox_target:addSphereZone(data)

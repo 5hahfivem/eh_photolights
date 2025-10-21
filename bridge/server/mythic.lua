@@ -13,10 +13,10 @@ local function retrieveComponents()
 	Vehicles = exports["mythic-base"]:FetchComponent("Vehicles")
 end
 
-AddEventHandler("eh_photolights:Shared:DependencyUpdate", retrieveComponents)
+AddEventHandler("hl_photolights:Shared:DependencyUpdate", retrieveComponents)
 
 AddEventHandler("Core:Shared:Ready", function()
-	exports["mythic-base"]:RequestDependencies("eh_photolights", {
+	exports["mythic-base"]:RequestDependencies("hl_photolights", {
 		"Database",
 		"Logger",
 		"Fetch",
@@ -29,7 +29,7 @@ AddEventHandler("Core:Shared:Ready", function()
 		"Vehicles"
 	}, function(error)
 		if #error > 0 then
-			Logger:Critical("eh_photolights", "Failed To Load All Dependencies")
+			Logger:Critical("hl_photolights", "Failed To Load All Dependencies")
 			return
 		end
 
@@ -78,7 +78,7 @@ end
 ---@param item string
 ---@param itemUse function
 function CreateUsableItem(item, itemUse)
-	Inventory.Items:RegisterUse(item, "eh_photolights", function(source, item)
+	Inventory.Items:RegisterUse(item, "hl_photolights", function(source, item)
 		itemUse(source, item)
 	end)
 end

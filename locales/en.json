@@ -7,14 +7,17 @@
 		"pickup": "Pickup"
 	},
 	"interact": {
-		"place": "~INPUT_ENTER~ ~g~Place",
-		"cancel": "~INPUT_DETONATE~ ~r~Cancel"
+		"place": "F - Place",
+		"cancel": "G - Cancel",
+		"rotate": "Mouse Wheel - Rotate"
 	},
 	"notification": {
 		"giveback": "Your light was returned because you were too far away.",
 		"max_drops": "You already have the maximum of %s active lights.",
 		"invalid": "Invalid action.",
 		"picked_up": "You picked up a light.",
-		"placed": "You placed a light."
+		"placed": "You placed a light.",
+		"distance_warning": "You are outside the light radius, they will despawn in %s",
+		"distance_safe": "You are back in range of your lights."
 	}
 } 

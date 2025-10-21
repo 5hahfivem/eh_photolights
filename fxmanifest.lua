@@ -1,12 +1,5 @@
-server_script '@ElectronAC/src/include/server.lua'
-client_script '@ElectronAC/src/include/client.lua'
---shared_script '@PegasusAC/server/install/EP.lua'
---shared_script "@ReaperV4/bypass.lua"
-lua54 "yes" -- needed for Reaper
-
-
 ------------------------------------------
-author 'Eh Eh Eh Eh' -- [[ Chuckles ]] --
+author 'Hollow' -- [[ Chuckles ]] --
 fx_version 'cerulean'
 game 'gta5'
 
@@ -43,13 +36,6 @@ files {
 	'shared/config.lua',
 	'client/client.lua',
 	'server/server.lua',
-	'bridge/config.lua',
-	'bridge/debug.lua',
-	'locales/*.json'
-}
-
-escrow_ignore {
-	'shared/config.lua',
 	'bridge/config.lua',
 	'bridge/debug.lua',
 	'locales/*.json'

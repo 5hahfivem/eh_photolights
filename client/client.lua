@@ -1,388 +1,520 @@
-local functions = {}
 local config = require('shared.config')
 
+-- Initialize ox_lib locale
+lib.locale()
+
+-- Constants
+local CONTROL_KEYS = {
+    PLACE = 23,      -- E
+    CANCEL = 47,     -- G
+    ROTATE_LEFT = 14, -- Mouse wheel up
+    ROTATE_RIGHT = 15 -- Mouse wheel down
+}
+
+local ROTATION_SPEED = 5.0
+local PREVIEW_DISTANCE = 10.0
+local PREVIEW_ALPHA = 128
+local COOLDOWN_TIME = 1000
+
+-- Cache natives
+local GetEntityCoords = GetEntityCoords
+local GetGameplayCamCoord = GetGameplayCamCoord
+local GetGameplayCamRot = GetGameplayCamRot
+local StartShapeTestRay = StartShapeTestRay
+local GetShapeTestResult = GetShapeTestResult
+local CreateObject = CreateObject
+local SetEntityCoords = SetEntityCoords
+local SetEntityRotation = SetEntityRotation
+local SetEntityAlpha = SetEntityAlpha
+local SetEntityCollision = SetEntityCollision
+local PlaceObjectOnGroundProperly = PlaceObjectOnGroundProperly
+local DeleteEntity = DeleteEntity
+local DoesEntityExist = DoesEntityExist
+local IsControlJustReleased = IsControlJustReleased
+local IsControlPressed = IsControlPressed
+local GetGameTimer = GetGameTimer
+local IsModelValid = IsModelValid
+local NetworkGetNetworkIdFromEntity = NetworkGetNetworkIdFromEntity
+local SetNetworkIdCanMigrate = SetNetworkIdCanMigrate
+local SetModelAsNoLongerNeeded = SetModelAsNoLongerNeeded
+local FreezeEntityPosition = FreezeEntityPosition
+local SetObjectForceVehiclesToAvoid = SetObjectForceVehiclesToAvoid
+local SetObjectLightColor = SetObjectLightColor
+local GetEntityFromStateBagName = GetEntityFromStateBagName
+local TaskPlayAnim = TaskPlayAnim
+local Wait = Wait
+
+-- State management
+---@type table<number, any>
 local drops = {}
+---@type table<number, any>
 local lights = {}
-local playerPed <const> = (cache and cache.ped) or PlayerPedId()
-local previewProp = nil
 local previewActive = false
+local previewProp = nil
 local previewData = nil
 local previewRotation = 0.0
 local cooldown = 0
 
-local L = function(key, ...)
-	if lib and lib.locale then
-		return lib.locale(key, ...)
-	end
-	return (key):format(...)
+-- Distance warning system
+local distanceWarningActive = false
+local distanceWarningEndTime = 0
+local wasInRange = true
+
+-- Cache player ped
+local playerPed <const> = cache.ped
+
+-- Locale helper
+local function L(key, ...)
+    return locale(key, ...)
+end
+
+-- Forward declarations
+local confirmPlacement
+local cancelPlacement
+local cleanupPreview
+
+local function normalizeAngle(angle)
+    while angle >= 360.0 do
+        angle = angle - 360.0
+    end
+    while angle < 0.0 do
+        angle = angle + 360.0
+    end
+    return angle
+end
+
+local function formatTime(seconds)
+    local minutes = math.floor(seconds / 60)
+    local secs = math.floor(seconds % 60)
+    return string.format("%02d:%02d", minutes, secs)
+end
+
+local function checkPlayerDistance(playerCoords)
+    local closestDistance = math.huge
+    local hasLights = false
+    
+    for _, drop in pairs(drops) do
+        if drop.object and DoesEntityExist(drop.object.entity) then
+            hasLights = true
+            local dropCoords = GetEntityCoords(drop.object.entity)
+            local distance = #(playerCoords - dropCoords)
+            closestDistance = math.min(closestDistance, distance)
+        end
+    end
+    
+    return hasLights, closestDistance
+end
+
+local function updateDistanceWarning(playerCoords)
+    local hasLights, closestDistance = checkPlayerDistance(playerCoords)
+    
+    if not hasLights then
+        if distanceWarningActive then
+            distanceWarningActive = false
+            wasInRange = true
+        end
+        return
+    end
+    
+    local isInRange = closestDistance <= config.MAX_DISTANCE
+    local currentTime = GetGameTimer()
+    
+    if not isInRange then
+        -- Player is out of range
+        if wasInRange then
+            -- Just went out of range, start warning
+            distanceWarningActive = true
+            distanceWarningEndTime = currentTime + (config.DISTANCE_TIMEOUT_MINUTES * 60 * 1000)
+            wasInRange = false
+        elseif distanceWarningActive then
+            -- Still out of range, update countdown
+            local remainingTime = math.max(0, distanceWarningEndTime - currentTime)
+            local remainingSeconds = math.ceil(remainingTime / 1000)
+            
+            if remainingSeconds > 0 then
+                local timeString = formatTime(remainingSeconds)
+                Notify(L('notification.distance_warning', timeString), 'warning')
+            end
+        end
+    else
+        -- Player is back in range
+        if not wasInRange then
+            -- Just came back in range
+            distanceWarningActive = false
+            wasInRange = true
+            Notify(L('notification.distance_safe'), 'success')
+        end
+    end
+end
+
+---@param distance number
+---@return boolean, vector3
+local function raycastFromCamera(distance)
+    local camCoords = GetGameplayCamCoord()
+    local camRot = GetGameplayCamRot(2)
+    
+    local direction = vector3(
+        -math.sin(math.rad(camRot.z)) * math.cos(math.rad(camRot.x)),
+        math.cos(math.rad(camRot.z)) * math.cos(math.rad(camRot.x)),
+        math.sin(math.rad(camRot.x))
+    )
+    
+    local endCoords = camCoords + direction * distance
+    local rayHandle = StartShapeTestRay(
+        camCoords.x, camCoords.y, camCoords.z,
+        endCoords.x, endCoords.y, endCoords.z,
+        -1, playerPed, 0
+    )
+    
+    local _, hit, coords, _, _ = GetShapeTestResult(rayHandle)
+    return hit == 1, coords or endCoords
 end
 
 local function createObject(config)
-	local model = config.model
-	local coords = config.coords
-	local networked = config.networked or false
-	local onCreated = config.onCreated
-	local onDeleted = config.onDeleted
+    local model = config.model
+    local coords = config.coords
+    local networked = config.networked or false
+    local onCreated = config.onCreated
+    local onDeleted = config.onDeleted
 
-	lib.requestModel(model)
-	local entity = CreateObject(model, coords.x, coords.y, coords.z, networked, false, false)
-	SetModelAsNoLongerNeeded(model)
+    lib.requestModel(model)
+    local entity = CreateObject(model, coords.x, coords.y, coords.z, networked, false, false)
+    SetModelAsNoLongerNeeded(model)
 
-	if not DoesEntityExist(entity) then
-		return nil
-	end
+    if not DoesEntityExist(entity) then
+        return nil
+    end
 
-	if networked then
-		SetNetworkIdCanMigrate(NetworkGetNetworkIdFromEntity(entity), false)
-	end
+    if networked then
+        local netId = NetworkGetNetworkIdFromEntity(entity)
+        SetNetworkIdCanMigrate(netId, false)
+    end
 
-	if onCreated then
-		onCreated(entity)
-	end
+    if onCreated then
+        onCreated(entity)
+    end
 
-	local object = {
-		entity = entity,
-		remove = function()
-			if DoesEntityExist(entity) then
-				DeleteEntity(entity)
-			end
-			if onDeleted then
-				onDeleted(entity)
-			end
-		end
-	}
-
-	return object
+    return {
+        entity = entity,
+        remove = function()
+            if DoesEntityExist(entity) then
+                DeleteEntity(entity)
+            end
+            if onDeleted then
+                onDeleted(entity)
+            end
+        end
+    }
 end
-functions.createObject = createObject
 
-local function RaycastFromCamera(distance)
-	local camCoords = GetGameplayCamCoord()
-	local camRot = GetGameplayCamRot(2)
-	local direction = vector3(
-		-math.sin(math.rad(camRot.z)) * math.cos(math.rad(camRot.x)),
-		math.cos(math.rad(camRot.z)) * math.cos(math.rad(camRot.x)),
-		math.sin(math.rad(camRot.x))
-	)
-	local endCoords = camCoords + direction * distance
-
-	local rayHandle = StartShapeTestRay(camCoords.x, camCoords.y, camCoords.z, endCoords.x, endCoords.y, endCoords.z, -1, playerPed, 0)
-	local _, hit, coords, _, _ = GetShapeTestResult(rayHandle)
-	return hit == 1, coords or endCoords
+local function parseRGB(value)
+    local r, g, b = value:match('(%d+),%s*(%d+),%s*(%d+)')
+    return {
+        red = tonumber(r) or 0,
+        green = tonumber(g) or 0,
+        blue = tonumber(b) or 0
+    }
 end
-functions.RaycastFromCamera = RaycastFromCamera
 
-local function StartPreview(itemId, model, itemName)
-	if previewActive or GetGameTimer() < cooldown then
-		return false
-	end
+-- Preview system
+---@param itemId string
+---@param model number
+---@param itemName string
+---@return boolean
+local function startPreview(itemId, model, itemName)
+    if previewActive or GetGameTimer() < cooldown then
+        return false
+    end
 
-	previewActive = true
-	previewData = { itemId = itemId, model = model, itemName = itemName }
-	previewRotation = 0.0
+    previewActive = true
+    previewData = { itemId = itemId, model = model, itemName = itemName }
+    previewRotation = 0.0
 
-	lib.requestModel(model)
-	previewProp = CreateObject(model, 0.0, 0.0, 0.0, false, false, false)
-	SetEntityAlpha(previewProp, 128, false)
-	SetEntityCollision(previewProp, false, false)
-	SetModelAsNoLongerNeeded(model)
+    lib.requestModel(model)
+    previewProp = CreateObject(model, 0.0, 0.0, 0.0, false, false, false)
+    SetEntityAlpha(previewProp, PREVIEW_ALPHA, false)
+    SetEntityCollision(previewProp, false, false)
+    SetModelAsNoLongerNeeded(model)
 
-	lib.showTextUI(L('interact.place') .. '  ' .. L('interact.cancel'), {
-		position = 'bottom-center',
-		icon = 'eye',
-		iconColor = 'white',
-		iconAnimation = 'bounce'
-	})
+    local placeText = L('interact.place')
+    local cancelText = L('interact.cancel')
+    local rotateText = L('interact.rotate')
+    
+    lib.showTextUI(placeText .. ' | ' .. cancelText .. ' | ' .. rotateText, {
+        position = 'bottom-center',
+        icon = 'eye',
+        iconColor = 'white',
+        iconAnimation = 'bounce'
+    })
 
-	CreateThread(function()
-		while previewActive do
-			local hit, coords = RaycastFromCamera(10.0)
-			if hit then
-				SetEntityCoords(previewProp, coords.x, coords.y, coords.z, false, false, false, false)
-				PlaceObjectOnGroundProperly(previewProp)
-				SetEntityRotation(previewProp, 0.0, 0.0, previewRotation, 2, false)
-			end
+    CreateThread(function()
+        while previewActive do
+            local hit, coords = raycastFromCamera(PREVIEW_DISTANCE)
+            if hit then
+                SetEntityCoords(previewProp, coords.x, coords.y, coords.z, false, false, false, false)
+                PlaceObjectOnGroundProperly(previewProp)
+                SetEntityRotation(previewProp, 0.0, 0.0, previewRotation, 2, false)
+            end
 
-			if IsControlJustReleased(0, 23) then
-				functions.ConfirmPlacement()
-			elseif IsControlJustReleased(0, 47) then
-				functions.CancelPlacement()
-			end
+            if IsControlJustReleased(0, CONTROL_KEYS.PLACE) then
+                confirmPlacement()
+            elseif IsControlJustReleased(0, CONTROL_KEYS.CANCEL) then
+                cancelPlacement()
+            end
 
-			if IsControlPressed(0, 14) then
-				previewRotation = previewRotation + 5.0
-			elseif IsControlPressed(0, 15) then
-				previewRotation = previewRotation - 5.0
-			end
+            if IsControlPressed(0, CONTROL_KEYS.ROTATE_LEFT) then
+                previewRotation = normalizeAngle(previewRotation + ROTATION_SPEED)
+            elseif IsControlPressed(0, CONTROL_KEYS.ROTATE_RIGHT) then
+                previewRotation = normalizeAngle(previewRotation - ROTATION_SPEED)
+            end
 
-			Wait(0)
-		end
-	end)
+            Wait(0)
+        end
+    end)
 
-	return true
+    return true
 end
-functions.StartPreview = StartPreview
 
-local function ConfirmPlacement()
-	if not previewActive or not previewProp or not previewData then
-		return false
-	end
+confirmPlacement = function()
+    if not previewActive or not previewProp or not previewData then
+        return false
+    end
 
-	local coords = GetEntityCoords(previewProp)
-	local heading = previewRotation
-	local itemId = previewData.itemId
-	local itemName = previewData.itemName
+    local coords = GetEntityCoords(previewProp)
+    local heading = previewRotation
+    local itemId = previewData.itemId
+    local itemName = previewData.itemName
 
-	DeleteEntity(previewProp)
-	previewProp = nil
-	previewActive = false
-	previewData = nil
-	previewRotation = 0.0
-	lib.hideTextUI()
+    cleanupPreview()
 
-	cooldown = GetGameTimer() + 1000
-	local ok, err = lib.callback.await('eh:photolights:dropProp', false, itemId, vector4(coords.x, coords.y, coords.z, heading), itemName)
-	if not ok and err == 'max_drops' then
-		Notify(L('notification.max_drops', tostring(config.MAX_DROPS_PER_PLAYER)), 'error')
-	end
-	return true
+    cooldown = GetGameTimer() + COOLDOWN_TIME
+    local ok, err = lib.callback.await('hl:photolights:dropProp', false, itemId, vector4(coords.x, coords.y, coords.z, heading), itemName)
+    
+    if not ok and err == 'max_drops' then
+        Notify(L('notification.max_drops', tostring(config.MAX_DROPS_PER_PLAYER)), 'error')
+    end
+    
+    return true
 end
-functions.ConfirmPlacement = ConfirmPlacement
 
-local function CancelPlacement()
-	if not previewActive or not previewProp then
-		return false
-	end
+cancelPlacement = function()
+    if not previewActive or not previewProp then
+        return false
+    end
 
-	DeleteEntity(previewProp)
-	previewProp = nil
-	previewActive = false
-	previewData = nil
-	previewRotation = 0.0
-	lib.hideTextUI()
-	return true
+    cleanupPreview()
+    return true
 end
-functions.CancelPlacement = CancelPlacement
 
-local function RotateLeft()
-	if not previewActive or not previewProp then
-		return false
-	end
-	previewRotation = previewRotation + 10.0
-	if previewRotation >= 360.0 then
-		previewRotation = previewRotation - 360.0
-	end
-	return true
+cleanupPreview = function()
+    if previewProp and DoesEntityExist(previewProp) then
+        DeleteEntity(previewProp)
+    end
+    
+    previewProp = nil
+    previewActive = false
+    previewData = nil
+    previewRotation = 0.0
+    lib.hideTextUI()
 end
-functions.RotateLeft = RotateLeft
 
-local function RotateRight()
-	if not previewActive or not previewProp then
-		return false
-	end
-	previewRotation = previewRotation - 10.0
-	if previewRotation < 0.0 then
-		previewRotation = previewRotation + 360.0
-	end
-	return true
+-- Drop management
+---@param data table
+local function createDrop(data)
+    if drops[data.id] then
+        return
+    end
+
+    if not IsModelValid(data.model) then
+        return
+    end
+
+    data.object = createObject({
+        model = data.model,
+        coords = data.position,
+        networked = true,
+        onCreated = function(entity)
+            PlaceObjectOnGroundProperly(entity)
+            FreezeEntityPosition(entity, true)
+            SetObjectForceVehiclesToAvoid(entity, true)
+            SetEntityRotation(entity, 0.0, 0.0, data.position.w, 2, false)
+
+            Entity(entity).state:set('propDrop', {
+                id = data.id,
+                itemId = data.itemId,
+                model = data.model
+            }, true)
+
+            if data.light then
+                Entity(entity).state:set('lightcolour', data.light, true)
+            end
+        end,
+        onDeleted = function(entity)
+            RemoveTargetEntity(entity)
+        end
+    })
+
+    if not data.object then
+        return
+    end
+
+    drops[data.id] = data
 end
-functions.RotateRight = RotateRight
 
-local function UseItem(slot, model, itemName)
-	StartPreview(tostring(slot), model, itemName)
+local function deleteDrop(id)
+    local drop = drops[id]
+    if not drop then
+        return
+    end
+
+    if drop.object and DoesEntityExist(drop.object.entity) then
+        drop.object.remove()
+    end
+
+    drops[id] = nil
 end
-functions.UseItem = UseItem
 
-local function PickupDrop(data)
-	local entity = data.entity
-	if not DoesEntityExist(entity) then
-		return
-	end
+local function pickupDrop(data)
+    local entity = data.entity
+    if not DoesEntityExist(entity) then
+        return
+    end
 
-	local state = Entity(entity).state
-	if not state.propDrop then
-		return
-	end
+    local state = Entity(entity).state
+    if not state.propDrop then
+        return
+    end
 
-	lib.requestAnimDict('random@domestic')
-	TaskPlayAnim(playerPed, 'random@domestic', 'pickup_low', 5.0, 1.0, 1.0, 48, 0.0, false, false, false)
-	Wait(400)
-	RemoveAnimDict('random@domestic')
+    lib.requestAnimDict('random@domestic')
+    TaskPlayAnim(playerPed, 'random@domestic', 'pickup_low', 5.0, 1.0, 1.0, 48, 0.0, false, false, false)
+    Wait(400)
+    RemoveAnimDict('random@domestic')
 
-	lib.callback.await('eh:photolights:pickupDrop', false, state.propDrop.id)
+    lib.callback.await('hl:photolights:pickupDrop', false, state.propDrop.id)
 end
-functions.PickupDrop = PickupDrop
 
-local function CreateDrop(data)
-	if drops[data.id] then
-		return
-	end
+-- Light management
+local function handleSetColour(id, data)
+    local drop = drops[id]
+    if not drop then
+        return
+    end
 
-	if not IsModelValid(data.model) then
-		return
-	end
-
-	data.object = createObject({
-		model = data.model,
-		coords = data.position,
-		networked = true,
-		onCreated = function(entity)
-			PlaceObjectOnGroundProperly(entity)
-			FreezeEntityPosition(entity, true)
-			SetObjectForceVehiclesToAvoid(entity, true)
-			SetEntityRotation(entity, 0.0, 0.0, data.position.w, 2, false)
-
-			Entity(entity).state:set('propDrop', {
-				id = data.id,
-				itemId = data.itemId,
-				model = data.model
-			}, true)
-
-			if data.light then
-				Entity(entity).state:set('lightcolour', data.light, true)
-			end
-		end,
-		onDeleted = function(entity)
-			RemoveTargetEntity(entity)
-		end
-	})
-
-	if not data.object then
-		return
-	end
-
-	drops[data.id] = data
+    Entity(drop.object.entity).state:set('lightcolour', data, true)
+    lights[id] = { colour = data.colour, label = data.label }
 end
-functions.CreateDrop = CreateDrop
 
-local function DeleteDrop(id)
-	local drop = drops[id]
-	if not drop then
-		return
-	end
-
-	if drop.object and DoesEntityExist(drop.object.entity) then
-		drop.object.remove()
-	end
-
-	drops[id] = nil
+local function handleStateBagChange(bagName, key, value)
+    local entity = GetEntityFromStateBagName(bagName)
+    if not DoesEntityExist(entity) then
+        return
+    end
+    
+    SetObjectLightColor(entity, true, value.colour.red, value.colour.green, value.colour.blue)
 end
-functions.DeleteDrop = DeleteDrop
 
-local function GetLight(id)
-	return lights[id]
+local function getLight(id)
+    return lights[id]
 end
-functions.GetLight = GetLight
 
-local function ParseRGB(value)
-	local r, g, b = value:match('(%d+),%s*(%d+),%s*(%d+)')
-	return {
-		red = tonumber(r) or 0,
-		green = tonumber(g) or 0,
-		blue = tonumber(b) or 0
-	}
+local function setupTarget()
+    local models = {}
+    for _, item in ipairs(config.ITEMS) do
+        models[#models + 1] = item.model
+    end
+
+    AddModelTarget(models, {
+        {
+            name = 'changelight',
+            label = L('target.change_colour'),
+            icon = 'fa-solid fa-palette',
+            distance = 1.0,
+            canInteract = function(entity)
+                return Entity(entity).state.propDrop ~= nil
+            end,
+            onSelect = function(data)
+                local id = Entity(data.entity).state.propDrop.id
+                local input = lib.inputDialog('RGB Controller', {
+                    {
+                        type = 'color',
+                        label = 'Colour',
+                        required = true,
+                        format = 'rgb',
+                        default = lights[id] and lights[id].label or 'rgb(0, 0, 0)'
+                    }
+                })
+
+                if not input then
+                    return
+                end
+
+                local colour = parseRGB(input[1])
+                lib.callback.await('hl:photolights:setcolour', false, id, {
+                    colour = colour,
+                    label = input[1]
+                })
+            end
+        },
+        {
+            name = 'pickup',
+            onSelect = pickupDrop,
+            label = L('target.pickup'),
+            icon = 'fa-solid fa-hand',
+            distance = 1.5,
+            canInteract = function(entity)
+                return Entity(entity).state.propDrop ~= nil
+            end,
+            drawSprite = true
+        }
+    })
 end
-functions.ParseRGB = ParseRGB
 
-local function SetupTarget()
-	local models = {}
-	for _, item in ipairs(config.ITEMS) do
-		table.insert(models, item.model)
-	end
-
-	-- Use bridge target abstraction
-	AddModelTarget(models, {
-		{
-			name = 'changelight',
-			label = L('target.change_colour'),
-			icon = 'fa-solid fa-palette',
-			distance = 1.0,
-			canInteract = function(entity)
-				return Entity(entity).state.propDrop ~= nil
-			end,
-			onSelect = function(data)
-				local id = Entity(data.entity).state.propDrop.id
-				local input = lib.inputDialog('RGB Controller', {
-					{
-						type = 'color',
-						label = 'Colour',
-						required = true,
-						format = 'rgb',
-						default = lights[id] and lights[id].label or 'rgb(0, 0, 0)'
-					}
-				})
-
-				if not input then
-					return
-				end
-
-				local colour = ParseRGB(input[1])
-				lib.callback.await('eh:photolights:setcolour', false, id, {
-					colour = colour,
-					label = input[1]
-				})
-			end
-		},
-		{
-			name = 'pickup',
-			onSelect = PickupDrop,
-			label = L('target.pickup'),
-			icon = 'fa-solid fa-hand',
-			distance = 1.5,
-			canInteract = function(entity)
-				return Entity(entity).state.propDrop ~= nil
-			end,
-			drawSprite = true
-		}
-	})
+-- Item usage
+local function useItem(slot, model, itemName)
+    startPreview(tostring(slot), model, itemName)
 end
-functions.SetupTarget = SetupTarget
 
-local function HandleSetColour(id, data)
-	local drop = drops[id]
-	if not drop then
-		return
-	end
-
-	Entity(drop.object.entity).state:set('lightcolour', data, true)
-	lights[id] = { colour = data.colour, label = data.label }
-end
-functions.HandleSetColour = HandleSetColour
-
-local function HandleStateBagChange(bagName, _, value)
-	local entity = GetEntityFromStateBagName(bagName)
-	if not DoesEntityExist(entity) then
-		return
-	end
-	SetObjectLightColor(entity, true, value.colour.red, value.colour.green, value.colour.blue)
-end
-functions.HandleStateBagChange = HandleStateBagChange
-
-RegisterNetEvent('eh:photolights:drop', CreateDrop)
-RegisterNetEvent('eh:photolights:setcolour', HandleSetColour)
-RegisterNetEvent('eh:photolights:deleteDrop', DeleteDrop)
-RegisterNetEvent('eh:photolights:useItem', function(slot, model, itemName)
-	UseItem(slot, model, itemName)
+-- Event handlers
+RegisterNetEvent('hl:photolights:drop', createDrop)
+RegisterNetEvent('hl:photolights:setcolour', handleSetColour)
+RegisterNetEvent('hl:photolights:deleteDrop', deleteDrop)
+RegisterNetEvent('hl:photolights:useItem', function(slot, model, itemName)
+    useItem(slot, model, itemName)
 end)
-AddStateBagChangeHandler('lightcolour', '', HandleStateBagChange)
 
-exports('getLight', GetLight)
+AddStateBagChangeHandler('lightcolour', '', handleStateBagChange)
 
-SetupTarget()
+-- Exports
+exports('getLight', getLight)
+
+-- Initialize
+setupTarget()
+
+-- Distance warning thread
+CreateThread(function()
+    while true do
+        local playerCoords = GetEntityCoords(playerPed)
+        updateDistanceWarning(playerCoords)
+        Wait(5000) -- Check every 5 seconds
+    end
+end)
 
 -- Cleanup on resource stop
-AddEventHandler('onResourceStop', function(res)
-	if res ~= GetCurrentResourceName() then return end
-	if previewActive and previewProp and DoesEntityExist(previewProp) then
-		DeleteEntity(previewProp)
-	end
-	lib.hideTextUI()
-	for id, drop in pairs(drops) do
-		if drop.object and drop.object.entity and DoesEntityExist(drop.object.entity) then
-			drop.object.remove()
-		end
-		drops[id] = nil
-	end
+AddEventHandler('onResourceStop', function(resourceName)
+    if resourceName ~= GetCurrentResourceName() then 
+        return 
+    end
+    
+    cleanupPreview()
+    
+    -- Reset distance warning state
+    distanceWarningActive = false
+    wasInRange = true
+    
+    for id, drop in pairs(drops) do
+        if drop.object and DoesEntityExist(drop.object.entity) then
+            drop.object.remove()
+        end
+        drops[id] = nil
+    end
 end)
-
-return functions

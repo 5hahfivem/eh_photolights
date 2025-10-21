@@ -8,10 +8,10 @@ local function retrieveComponents()
 	Inventory = exports["mythic-base"]:FetchComponent("Inventory")
 end
 
-AddEventHandler("eh_photolights:Shared:DependencyUpdate", retrieveComponents)
+AddEventHandler("hl_photolights:Shared:DependencyUpdate", retrieveComponents)
 
 AddEventHandler("Core:Shared:Ready", function()
-	exports["mythic-base"]:RequestDependencies("eh_photolights", {
+	exports["mythic-base"]:RequestDependencies("hl_photolights", {
 		"Targeting",
 		"Progress",
 		"Notification",
